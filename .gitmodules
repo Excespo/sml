@@ -1,0 +1,3 @@
+[submodule "thirdparty/2006_Groeneveld_CriticalHeatFlux_LUT"]
+	path = thirdparty/2006_Groeneveld_CriticalHeatFlux_LUT
+	url = https://github.com/greenwoodms06/2006_Groeneveld_CriticalHeatFlux_LUT.git

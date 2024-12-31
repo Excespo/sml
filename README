@@ -1,0 +1,70 @@
+# SML Final Project
+
+Subject: Prediction for heat flux on dataset "playground-series-s3e15"
+
+Author:
+
+## Data Preparation
+
+Get data from:
+ - https://www.kaggle.com/datasets/saurabhshahane/predicting-heat-flux
+ - https://www.kaggle.com/competitions/playground-series-s3e15/data
+
+And place them under the `data` directory.
+
+## Build Running Environment
+
+We use docker to build the running environment. If you don't have docker on your windows yet, you may should install wsl2 + docker for windows first.
+
+Once the docker backend is ready, place yourself in the base directory of this project, and run the following command to build the docker image:
+
+```bash
+docker build -t sml-final-project:flag .
+```
+
+To run the docker container with your local gpu available and local directory mounted, you can use the following command:
+
+```bash
+docker run -itd --gpus all -v $(pwd):/mnt/sml sml-final-project:flag bash
+```
+
+Now the docker container is running in the background. You can use the following command to check the container status:
+
+```bash
+docker ps
+```
+
+And to enter the container:
+
+```bash
+docker exec -it sml-final-project bash
+```
+
+You will see "root" as user name, which means the env is now ready. You may need to manually install some packages list below:
+ - seaborn
+ - ipykernel
+ - jupyter
+ - lightgbm
+ - xgboost
+ - catboost
+ - sdf (maybe older version than 0.3.6 is required for numpy compatibility)
+
+## Run the project's training and eval
+
+## Run the project demo
+
+Normally in vscode, you need to install "jupyter" extension to detect the python kernel. You can either select the python interpreter directly or install a new jupyter kernel with the following command:
+
+```bash
+python -m ipykernel install --user --name sml-env --display-name "Python (sml-env)"
+```
+
+how to use look up table
+
+```bash
+cd thirdparty/2006_Groeneveld_CriticalHeatFlux_LUT && python 2006LUT_to_SDF.py
+```
+
+```bash
+python test/test_lut.py
+```

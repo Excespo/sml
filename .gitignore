@@ -1,0 +1,18 @@
+# 忽略 Python 编译文件
+__pycache__/
+*.pyc
+
+# 忽略虚拟环境
+venv/
+
+# 忽略日志文件
+logs/
+
+# 忽略输出文件
+outputs/
+
+data/
+
+catboost_info/
+
+*/*.egg-info/
