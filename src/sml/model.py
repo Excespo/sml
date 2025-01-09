@@ -19,21 +19,48 @@ class LookUpTable(nn.Module):
             unit='W/m2',
             scale_units=['kg/(m2.s)', '1', 'Pa']
         )
-        self.mass_flux_grid = torch.tensor(self.lut.scales[0].data, requires_grad=False)
-        self.quality_grid = torch.tensor(self.lut.scales[1].data, requires_grad=False) 
-        self.pressure_grid = torch.tensor(self.lut.scales[2].data, requires_grad=False)
-        self.data = torch.tensor(self.lut.data, requires_grad=False)
+        # G massflux 
+        # x quality
+        # P pressure
+        # q chf
+        self.mass_flux_grid = self.lut.scales[0].data
+        self.quality_grid = self.lut.scales[1].data
+        self.pressure_grid = self.lut.scales[2].data
+        self.chf = self.lut.data
 
-        self.cpu_interpolator = RegularGridInterpolator(
-            (self.mass_flux_grid.numpy(), self.quality_grid.numpy(), self.pressure_grid.numpy()),
-            self.data.numpy(),
-            method='linear',
-            bounds_error=False,
-            fill_value=None
+    def _nearest_index(self, grid, value):
+        value = value.detach().cpu().numpy()
+        grid = np.asarray(grid)
+        idx = np.searchsorted(grid, value)
+
+        if idx == 0:
+            return 0
+        elif idx == len(grid):
+            return len(grid) - 1
+        
+        if abs(value - grid[idx]) < abs(value - grid[idx - 1]):
+            return idx
+        else:
+            return idx - 1
+
+    def forward(self, mass_flux, quality, pressure):
+       
+        pressure = pressure * 1e6
+
+        nearest_mass_flux = self._nearest_index(self.mass_flux_grid, mass_flux)
+        nearest_quality = self._nearest_index(self.quality_grid, quality)
+        nearest_pressure = self._nearest_index(self.pressure_grid, pressure)
+        # print(f"mass flux grid: {self.mass_flux_grid}, mass flux: {mass_flux}, nearest: {nearest_mass_flux}")
+        # print(f"quality grid: {self.quality_grid}, quality: {quality}, nearest: {nearest_quality}")
+        # print(f"pressure grid: {self.pressure_grid}, pressure: {pressure}, nearest: {nearest_pressure}")
+
+        chf = torch.tensor(
+            self.chf[nearest_mass_flux, nearest_quality, nearest_pressure], 
+            device=mass_flux.device
         )
+        # print(f"chf: {chf}")
 
-    def forward(self, pressure, mass_flux, quality):
-        return self.cpu_interpolator((mass_flux, quality, pressure))
+        return chf / 1e6 # In LUT unit is W/m2, convert to MW/m2
 
 class LiuModel(nn.Module):
     def __init__(self, batch_size=1):
@@ -95,11 +122,12 @@ class LiuModel(nn.Module):
     
 
 class FeedForwardNetwork(nn.Module):
-    def __init__(self, layer_dims=[8, 50, 50, 50, 1], activation=nn.ReLU, dropout_p=0.5):
+    def __init__(self, layer_dims=[8, 50, 50, 50, 1], activation=nn.ReLU, dropout_p=0.5, if_hybrid=False):
         super().__init__()
         self.layer_dims = layer_dims
         self.activation = activation
         self.dropout_p = dropout_p
+        self.if_hybrid = if_hybrid
         
         self.dtype = torch.float32 # ensure using float32
         self._build_layers()
@@ -130,7 +158,10 @@ class FeedForwardNetwork(nn.Module):
             if isinstance(layer, nn.Linear):
                 nn.init.uniform_(layer.weight, -0.1, 0.1)
                 nn.init.constant_(layer.bias, 0)
-        nn.init.uniform_(self.output_layer.weight, -10, 10) 
+        if self.if_hybrid:
+            nn.init.uniform_(self.output_layer.weight, -10, 10) 
+        else:
+            nn.init.uniform_(self.output_layer.weight, -1, 1) 
         nn.init.constant_(self.output_layer.bias, 0)
 
     def forward(self, x):
@@ -140,18 +171,64 @@ class FeedForwardNetwork(nn.Module):
         return x
 
 class HybridModel(nn.Module):
-    def __init__(self, physical_model):
+    def __init__(self, physical_model, feature_ranges, layer_dims=[8, 50, 50, 50, 1], activation=nn.ReLU, dropout_p=0.5):
         super().__init__()
+        self.physical_model = physical_model
+        self.feature_ranges = feature_ranges
         if physical_model == "liu":
             self.physical = LiuModel()
         elif physical_model == "lut":
-            self.physical = LookUpTable()
+            self.physical = LookUpTable("thirdparty/2006_Groeneveld_CriticalHeatFlux_LUT/2006LUT.sdf")
         else:
             raise ValueError(f"Unknown physical model: {physical_model}")
         
-        self.ffn = FeedForwardNetwork()
+        self.ffn = FeedForwardNetwork(
+            layer_dims=layer_dims,
+            activation=activation,
+            dropout_p=dropout_p,
+            if_hybrid=True
+        )
 
     def forward(self, x):
-        lut_output = self.look_up_table(x)
-        ffn_output = self.feed_forward_network(x)
-        return lut_output + ffn_output
+
+        if self.physical_model == "lut":
+            min_P, max_P = self.feature_ranges["pressure [MPa]"]["min"], self.feature_ranges["pressure [MPa]"]["max"]
+            min_G, max_G = self.feature_ranges["mass_flux [kg/m2-s]"]["min"], self.feature_ranges["mass_flux [kg/m2-s]"]["max"]
+            min_x, max_x = self.feature_ranges["x_e_out [-]"]["min"], self.feature_ranges["x_e_out [-]"]["max"]
+            
+            if x.dim() == 2:
+                x = x.squeeze()
+            device = x.device
+            x = x.detach().cpu().numpy()
+
+            pressure = torch.tensor((x[0] + 1) / 2 * (max_P - min_P) + min_P, device=device)
+            mass_flux = torch.tensor((x[1] + 1) / 2 * (max_G - min_G) + min_G, device=device)
+            quality = torch.tensor((x[2] + 1) / 2 * (max_x - min_x) + min_x, device=device)
+
+            inputs = {
+                "pressure": pressure,
+                "mass_flux": mass_flux,
+                "quality": quality
+            }
+            empirical_output = self.physical(**inputs)
+
+        elif self.physical_model == "liu":
+            empirical_output = self.physical(x)
+
+        else:
+            raise ValueError(f"Unknown physical model: {self.physical_model}")
+        
+        x = torch.tensor(x, device=device)
+        return empirical_output + self.ffn(x)
+
+class RandomForest:
+
+    def __init__(self, algos):
+        self.models = [CatBoostRegressor(**algo) for algo in algos]
+
+    def fit(self, X, y):
+        for model in self.models:
+            model.fit(X, y)
+
+    def predict(self, X):
+        return [model.predict(X) for model in self.models]

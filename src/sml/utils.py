@@ -30,12 +30,15 @@ def get_logger(name):
     
     return logger
 
-def save_checkpoint(model, optimizer, epoch, loss,checkpoint_dir="./outputs/ckpt"):
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch}.pth")
+def save_checkpoint(model, optimizer, epoch, loss,checkpoint_path):
+    
     torch.save({
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
     }, checkpoint_path)
 
+def tensor_to_list(tensor):
+    if tensor.dim() > 1:
+        tensor = tensor.view(-1)
+    return tensor.cpu().detach().numpy().tolist()
